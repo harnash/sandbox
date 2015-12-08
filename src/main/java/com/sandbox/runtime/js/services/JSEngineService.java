@@ -142,6 +142,7 @@ public class JSEngineService {
             loadAndSealScript("faker.js","lib/faker-2.1.5.min", "faker", globalScope, sandboxEngine.getEngine());
             loadAndSealScript("moment.js", "lib/moment-2.8.2.min", "moment", globalScope, sandboxEngine.getEngine());
             loadAndSealScript("amanda.js", "lib/amanda-0.4.8.min", "amanda", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("chance.js", "lib/chance-0.8.0.min", "chance", globalScope, sandboxEngine.getEngine());
             loadAndSealScript("validator.js", "lib/validator.min", "validator", globalScope, sandboxEngine.getEngine());
             loadAndSealScript("sandbox-validator.js", "sandbox-validator", "sandboxValidator", globalScope, sandboxEngine.getEngine());
 
