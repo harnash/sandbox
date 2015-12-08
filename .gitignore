@@ -1,1 +1,6 @@
+# IntelliJ specifics
 build
+.gradle
+.idea
+gradle*
+*.iml
