@@ -18,7 +18,7 @@ set -e
 git pull --unshallow
 
 echo "Creating runnable package: $package_path"
-sandbox_version=`git rev-list --all HEAD | wc -l`
+sandbox_version=`git rev-list --all HEAD | wc -l | xargs`
 sandbox_sha=`git rev-parse --short HEAD`
 printf "#!/bin/bash\nSANDBOX_VERSION='1.$sandbox_version-$sandbox_sha'\n" > $output_path/version
 cat $output_path/version $run_script $app_path/build/libs/*-1.0-all.jar > $package_path && chmod +x $package_path
