@@ -2,6 +2,9 @@ package com.sandbox.runtime.models;
 
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.sandbox.common.models.Error;
+import com.sandbox.common.models.RuntimeResponse;
+import com.sandbox.common.models.ServiceScriptException;
 import com.sandbox.runtime.js.converters.NashornConverter;
 import com.sandbox.runtime.js.models.JsonNode;
 import com.sandbox.runtime.utils.URISupport;
@@ -13,7 +16,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.URLDecoder;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,47 +23,26 @@ import java.util.Map;
 /**
  * Created by drew on 30/07/2014.
  */
-public class HTTPRequest {
+public abstract class EngineRequest {
 
-    final String path;
-    final String method;
     final ScriptObject headers;
     final Map<String, String> properties;
-    final ScriptObject query;
-    final ScriptObject params;
-    final ScriptObject cookies;
     final Object body;
     final String contentType;
     final String ip;
-    final List<String> accepted;
-    final String url;
     final XMLDoc xmlDoc;
 
     private static MimetypesFileTypeMap mimeTypes = new MimetypesFileTypeMap();
 
-    public HTTPRequest(ScriptEngine scriptEngine, String path, String method, Map<String, String> headers,
-                       Map<String, String> properties, Map<String, String> query, Map<String, String> params,
-                       Map<String, String> cookies, Object body, String contentType,
-                       String ip, List<String> accepted, String url) throws Exception {
+    public EngineRequest(ScriptEngine scriptEngine, Map<String, String> headers,
+                         Map<String, String> properties, Object body, String contentType, String ip) throws Exception {
 
         // set default values
-        this.path = path != null ? path : "";
-        this.method = method != null ? method : "";
         Map javaHeaders = headers != null ? headers : new HashMap<String, String>();
         this.headers = (ScriptObject) NashornConverter.instance().convert(scriptEngine, javaHeaders);
-        Map javaQuery= query != null ? query : new HashMap<String, String>();
-        this.query = (ScriptObject) NashornConverter.instance().convert(scriptEngine, javaQuery);
-        Map javaParams= params != null ? params : new HashMap<String, String>();
-        this.params = (ScriptObject) NashornConverter.instance().convert(scriptEngine, javaParams);
-        Map javaCookies= cookies != null ? cookies : new HashMap<String, String>();
-        this.cookies = (ScriptObject) NashornConverter.instance().convert(scriptEngine, javaCookies);
-
         this.properties = properties != null ? properties : new HashMap<String, String>();
         this.contentType = contentType != null ? contentType : "";
         this.ip = ip != null ? ip : "";
-        this.accepted = accepted != null ? accepted : new ArrayList<String>();
-        this.url = url != null ? url : "";
-
 
         Object _body = null;
         XMLDoc _xmlDoc = null;
@@ -98,9 +79,12 @@ public class HTTPRequest {
         return getHeaders().get(headerName.toLowerCase());
     }
 
-    public boolean is(String type){
+    public abstract boolean is(String type);
+
+    public boolean is(String type, String header){
+
         if(type == null || type.length() == 0) return false;
-        if(headers == null || headers.get("Content-Type") == null) return false;
+        if(headers == null || headers.get(header) == null) return false;
 
         String contentType;
         if (type.contains("/")) {
@@ -111,15 +95,11 @@ public class HTTPRequest {
             contentType = mimeTypes.getContentType(type);
         }
 
-        return headers.get("Content-Type").toString().toLowerCase().startsWith(contentType.toLowerCase());
+        return headers.get(header).toString().toLowerCase().startsWith(contentType.toLowerCase());
     }
 
-    public String getPath() {
-        return path;
-    }
-
-    public String getMethod() {
-        return method;
+    public ScriptObject headers() {
+        return headers;
     }
 
     public ScriptObject getHeaders() {
@@ -128,18 +108,6 @@ public class HTTPRequest {
 
     public Map<String, String> getProperties() {
         return properties;
-    }
-
-    public ScriptObject getQuery() {
-        return query;
-    }
-
-    public ScriptObject getParams() {
-        return params;
-    }
-
-    public ScriptObject getCookies() {
-        return cookies;
     }
 
     public Object getBody() {
@@ -154,21 +122,13 @@ public class HTTPRequest {
         return ip;
     }
 
-    public List<String> getAccepted() {
-        return accepted;
-    }
-
-    public String getUrl() {
-        return url;
-    }
-
     @JsonIgnore
     public XMLDoc getXmlDoc() {
         return xmlDoc;
     }
 
     @JsonIgnore
-    public String getBodyAsString() { return body.toString(); }
+    public String getBodyAsString() { return body == null ? "" : body.toString(); }
 
     private HashMap<String, String> decodeBody(String body) throws Exception{
         HashMap<String, String> queryMap = new HashMap<>();
@@ -196,18 +156,24 @@ public class HTTPRequest {
         return queryMap;
     }
 
-    private static List<String> accessibleProperties = new ArrayList();
-    public List<String> _getAccessibleProperties() {
+
+    protected List<String> _getAccessibleProperties(List<String> accessibleProperties, Class targetClass) {
         if(!accessibleProperties.isEmpty()) return accessibleProperties;
 
-        for (Field field : this.getClass().getDeclaredFields()){
+        for (Field field : targetClass.getDeclaredFields()){
             if(!Modifier.isPrivate(field.getModifiers())) accessibleProperties.add(field.getName());
         }
 
-        for (Method method: this.getClass().getDeclaredMethods()){
+        for (Method method: targetClass.getDeclaredMethods()){
             if(Modifier.isPublic(method.getModifiers())) accessibleProperties.add(method.getName());
         }
 
         return accessibleProperties;
     }
+
+    public abstract Exception _getNoRouteDefinitionException();
+
+    public abstract RuntimeResponse _getErrorResponse(Error error);
+
+    public abstract EngineResponse _getMatchingResponse();
 }

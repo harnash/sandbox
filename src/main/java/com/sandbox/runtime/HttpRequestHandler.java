@@ -6,18 +6,21 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sandbox.runtime.converters.HttpServletConverter;
 import com.sandbox.runtime.js.converters.HTTPRequestConverter;
 import com.sandbox.runtime.js.services.RuntimeService;
+import com.sandbox.runtime.js.services.ServiceManager;
 import com.sandbox.runtime.models.Cache;
-import com.sandbox.runtime.models.Error;
-import com.sandbox.runtime.models.HTTPRequest;
-import com.sandbox.runtime.models.HttpRuntimeRequest;
-import com.sandbox.runtime.models.HttpRuntimeResponse;
-import com.sandbox.runtime.models.MatchedRouteDetails;
+import com.sandbox.common.models.Error;
 import com.sandbox.runtime.models.RoutingTable;
+import com.sandbox.common.models.RuntimeResponse;
+import com.sandbox.runtime.models.http.HTTPRequest;
+import com.sandbox.runtime.models.http.HTTPRouteDetails;
+import com.sandbox.common.models.http.HttpRuntimeRequest;
+import com.sandbox.common.models.http.HttpRuntimeResponse;
 import com.sandbox.runtime.services.CommandLineProcessor;
 import com.sandbox.runtime.utils.FormatUtils;
 import com.sandbox.runtime.utils.MapUtils;
 import org.apache.cxf.jaxrs.model.URITemplate;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +66,9 @@ public class HttpRequestHandler extends AbstractHandler {
     CommandLineProcessor commandLine;
 
     @Autowired
+    ServiceManager serviceManager;
+
+    @Autowired
     private HttpServletConverter servletConverter;
 
     @Autowired
@@ -70,8 +76,9 @@ public class HttpRequestHandler extends AbstractHandler {
 
     private static Logger logger = LoggerFactory.getLogger(HttpRequestHandler.class);
 
+    //handle is synchronized so that the JS processing is done on one thread.
     @Override
-    public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
+    public synchronized void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
         baseRequest.setHandled(true);
 
         //defaulted
@@ -85,15 +92,15 @@ public class HttpRequestHandler extends AbstractHandler {
             HttpRuntimeRequest runtimeRequest = servletConverter.httpServletToInstanceHttpRequest(request);
 
             //get a runtime service instance
-            RuntimeService routingService = context.getBean(RuntimeService.class);
+            RuntimeService runtimeService = (RuntimeService) serviceManager.getService(sandboxId, sandboxId);
 
             //create and lookup routing table
             RoutingTable routingTable = cache.getRoutingTableForSandboxId(sandboxId);
             if(routingTable == null) {
-                routingTable = routingService.handleRoutingTableRequest(sandboxId);
+                routingTable = runtimeService.handleRoutingTableRequest();
                 cache.setRoutingTableForSandboxId(sandboxId, routingTable);
             }
-            MatchedRouteDetails routeMatch = findMatchedRoute(runtimeRequest, routingTable);
+            HTTPRouteDetails routeMatch = findMatchedRoute(runtimeRequest, routingTable);
             //if no route match for given request, then log message and send error response.
             if(routeMatch == null){
                 logger.warn("** Error processing request for {} {} - Invalid route", runtimeRequest.getMethod(), runtimeRequest.getPath() == null ? request.getRequestURI() : runtimeRequest.getPath());
@@ -107,20 +114,19 @@ public class HttpRequestHandler extends AbstractHandler {
             logRequest(runtimeRequest, routeMatch, requestId);
 
             //run request
-            RuntimeService runtimeService = context.getBean(RuntimeService.class);
             HTTPRequest httpRequest = serviceConverter.fromInstanceHttpRequest(runtimeService.getSandboxScriptEngine().getEngine(), runtimeRequest);
             HttpRuntimeResponse runtimeResponse = null;
 
-            if("options".equalsIgnoreCase(httpRequest.getMethod())){
+            if("options".equalsIgnoreCase(httpRequest.method())){
                 //if options request, send back CORS headers
-                runtimeResponse = new HttpRuntimeResponse("", 200, new HashMap<>(), new ArrayList<>());
-                runtimeResponse.getHeaders().put("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+                runtimeResponse = new HttpRuntimeResponse("", 200, null, new HashMap<>(), new ArrayList<>());
+                runtimeResponse.getHeaders().put("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
                 runtimeResponse.getHeaders().put("Access-Control-Allow-Origin", runtimeRequest.getHeaders().getOrDefault("Origin", "*"));
                 runtimeResponse.getHeaders().put("Access-Control-Allow-Headers", runtimeRequest.getHeaders().getOrDefault("Access-Control-Request-Headers", "Content-Type"));
                 runtimeResponse.getHeaders().put("Access-Control-Allow-Credentials", "true");
             }else{
                 //otherwise process normally
-                runtimeResponse = runtimeService.handleRequest(sandboxId, sandboxId, httpRequest);
+                runtimeResponse = (HttpRuntimeResponse) runtimeService.handleRequest(httpRequest).get(0);
             }
             runtimeResponse.setDurationMillis(System.currentTimeMillis() - startedRequest);
 
@@ -141,7 +147,7 @@ public class HttpRequestHandler extends AbstractHandler {
         }
     }
 
-    private void logRequest(HttpRuntimeRequest request, MatchedRouteDetails matchedRouteDetails, String requestId){
+    private void logRequest(HttpRuntimeRequest request, HTTPRouteDetails matchedRouteDetails, String requestId){
         String matchedRouteDescription = "No matching route";
         if(matchedRouteDetails != null) matchedRouteDescription = "Matched route '" + matchedRouteDetails.getPath() + "'";
 
@@ -167,7 +173,7 @@ public class HttpRequestHandler extends AbstractHandler {
 
     }
 
-    private void logResponse(HttpRuntimeResponse response, String requestId){
+    private void logResponse(RuntimeResponse response, String requestId){
         //then response
         String bodyDescription = "No body found";
         if(StringUtils.hasLength(response.getBody())) {
@@ -175,10 +181,12 @@ public class HttpRequestHandler extends AbstractHandler {
             bodyDescription = "Body: '" + truncatedBody + "'";
         }
 
-        logger.info("<< Status: {} (took {}ms)\n" +
-                "<< Headers: {}\n" +
-                "<< {}",
-                response.getStatusCode(), response.getDurationMillis(), getSafe(response.getHeaders(), new HashMap<>()), bodyDescription);
+        if(response instanceof RuntimeResponse){
+            logger.info("<< Status: {} (took {}ms)\n" +
+                            "<< Headers: {}\n" +
+                            "<< {}",
+                    ((HttpRuntimeResponse)response).getStatusCode(), response.getDurationMillis(), getSafe(response.getHeaders(), new HashMap<>()), bodyDescription);
+        }
     }
 
     private String renderBody(String body, Map<String, String> headers){
@@ -202,8 +210,8 @@ public class HttpRequestHandler extends AbstractHandler {
     }
 
     //gets the matching route (if any) out of the routing table
-    private MatchedRouteDetails findMatchedRoute(HttpRuntimeRequest request, RoutingTable table) throws Exception {
-        MatchedRouteDetails match = table.findMatch(request.getMethod(), request.getUrl(), request.getHeaders());
+    private HTTPRouteDetails findMatchedRoute(HttpRuntimeRequest request, RoutingTable table) throws Exception {
+        HTTPRouteDetails match = (HTTPRouteDetails) table.findMatch(request);
         if(match == null) return null;
 
         Map<String, String> flattenedPathParams = mapUtils.flattenMultiValue(match.getPathParams(), URITemplate.FINAL_MATCH_GROUP);
@@ -228,28 +236,32 @@ public class HttpRequestHandler extends AbstractHandler {
     }
 
     //map a non-exception response, could be success or error
-    private void mapResponse(HttpRuntimeResponse runtimeResponse, HttpServletResponse response) throws Exception {
-        //status
-        if (runtimeResponse.getStatusCode() <= 0) {
-            response.setStatus(200);
-        } else {
-            response.setStatus(runtimeResponse.getStatusCode());
-        }
+    private void mapResponse(RuntimeResponse runtimeResponse, HttpServletResponse response) throws Exception {
 
         //headers
         if (runtimeResponse.getHeaders() != null) {
             for (String key : runtimeResponse.getHeaders().keySet()) {
                 response.setHeader(key, runtimeResponse.getHeaders().get(key));
             }
-
         }
 
-        //cookies
-        if (runtimeResponse.getCookies() != null) {
-            for (String[] cookie : runtimeResponse.getCookies()) {
-                response.addHeader("Set-Cookie", cookie[0] + "=" + cookie[1]);
+        if(runtimeResponse instanceof HttpRuntimeResponse){
+            HttpRuntimeResponse httpResponse = (HttpRuntimeResponse) runtimeResponse;
+            //status
+            int statusCode = httpResponse.getStatusCode() <= 0 ? 200 : httpResponse.getStatusCode();
+            if(httpResponse.getStatusText() != null && response instanceof Response){
+                ((Response)response).setStatusWithReason(statusCode, httpResponse.getStatusText());
+            }else{
+                response.setStatus(statusCode);
             }
 
+            //cookies
+            if (httpResponse.getCookies() != null) {
+                for (String[] cookie : httpResponse.getCookies()) {
+                    response.addHeader("Set-Cookie", cookie[0] + "=" + cookie[1]);
+                }
+
+            }
         }
 
         if(runtimeResponse.isError()){

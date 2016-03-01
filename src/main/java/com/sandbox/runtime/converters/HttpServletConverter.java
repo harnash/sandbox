@@ -1,6 +1,6 @@
 package com.sandbox.runtime.converters;
 
-import com.sandbox.runtime.models.HttpRuntimeRequest;
+import com.sandbox.common.models.http.HttpRuntimeRequest;
 import com.sandbox.runtime.utils.MapUtils;
 import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
@@ -14,19 +14,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.regex.Pattern;
 
 /**
  * Created by nickhoughton on 1/08/2014.
  */
 
-public class HttpServletConverter {
+public class HttpServletConverter extends RequestConverter{
 
     @Autowired
     MapUtils mapUtils;
-
-    Pattern jsonPattern = Pattern.compile("^application\\/([\\w!#\\$%&\\*`\\-\\.\\^~]*\\+)?json.*$", Pattern.CASE_INSENSITIVE);
-    Pattern xmlPattern = Pattern.compile("(text\\/xml|application\\/([\\w!#\\$%&\\*`\\-\\.\\^~]+\\+)?xml).*$", Pattern.CASE_INSENSITIVE);
 
     private static Logger logger = LoggerFactory.getLogger(HttpServletConverter.class);
 
@@ -64,8 +60,10 @@ public class HttpServletConverter {
         request.setRawQuery(rawRequest.getQueryString());
 
         Map<String, String> cookies = new HashMap<>();
-        for (javax.servlet.http.Cookie servletCookie : rawRequest.getCookies()){
-            cookies.put(servletCookie.getName(), servletCookie.getValue());
+        if(rawRequest.getCookies() != null) {
+            for (javax.servlet.http.Cookie servletCookie : rawRequest.getCookies()) {
+                cookies.put(servletCookie.getName(), servletCookie.getValue());
+            }
         }
         request.setCookies(cookies);
 
@@ -119,14 +117,6 @@ public class HttpServletConverter {
 
         return accepted;
 
-    }
-
-    public Pattern getJsonPattern() {
-        return jsonPattern;
-    }
-
-    public Pattern getXmlPattern() {
-        return xmlPattern;
     }
 
     public MapUtils getMapUtils() {

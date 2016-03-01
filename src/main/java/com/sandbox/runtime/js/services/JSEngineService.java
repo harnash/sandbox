@@ -1,6 +1,7 @@
 package com.sandbox.runtime.js.services;
 
 import com.sandbox.runtime.js.models.Console;
+import com.sandbox.runtime.js.models.RuntimeVersion;
 import com.sandbox.runtime.js.utils.FileUtils;
 import com.sandbox.runtime.js.utils.NashornRuntimeUtils;
 import com.sandbox.runtime.models.SandboxScriptEngine;
@@ -8,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
-import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
 import javax.script.Bindings;
@@ -17,57 +17,47 @@ import javax.script.ScriptEngine;
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
 import javax.script.SimpleScriptContext;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Created by nickhoughton on 3/12/2015.
  */
-@Component
 public class JSEngineService {
 
     static Logger logger = LoggerFactory.getLogger(JSEngineService.class);
     private ScriptEngine engine;
-    private Map<String, SandboxScriptEngine> sandboxEngines = new HashMap();
+    private RuntimeVersion runtimeVersion;
+    //set capacity to arbitrary number of queued objects, how about 10?
+    private ArrayBlockingQueue<SandboxScriptEngine> createdEngines = new ArrayBlockingQueue<>(10);
 
     @Autowired
     ApplicationContext context;
 
-    //total number of times this engine has been executed, number of times getEngine.. is called.
-    private int numberOfRuns = 0;
-    //the number of executions between 'refreshes' of the engine context, refresh is expensive and unnecessary for every call.
-    private int refreshThreshold = 1;
-
-    public JSEngineService() {
-    }
-
-    public JSEngineService(int refreshThreshold) {
-        this.refreshThreshold = refreshThreshold;
+    public JSEngineService(RuntimeVersion runtimeVersion) {
+        this.runtimeVersion = runtimeVersion;
     }
 
     @PostConstruct
     public void start(){
         this.engine = context.getBean(ScriptEngine.class);
+        //start an executor to keep topping up the created engines so validation requests and first requests are faster.
+        Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                while(createdEngines.remainingCapacity() > 0){
+                    createdEngines.add(createEngine());
+                }
+            }
+        }, 0, 1, TimeUnit.SECONDS);
     }
 
-    //reuse or create a new engine for a given sandboxid, we reuse engine across executions for the same sbid.
-    public SandboxScriptEngine getEngineForSandboxId(String sandboxId){
-        numberOfRuns += 1;
+    public SandboxScriptEngine createOrGetEngine(){
+        SandboxScriptEngine engine = createdEngines.poll();
+        if(engine != null) return engine;
 
-        SandboxScriptEngine sandboxEngine = sandboxEngines.get(sandboxId);
-        if(sandboxEngine == null) {
-            sandboxEngine = createEngine();
-            sandboxEngines.putIfAbsent(sandboxId, sandboxEngine);
-        }else{
-            //execute refresh every N runs
-            if(numberOfRuns % refreshThreshold == 0) {
-                createNewContext(sandboxEngine);
-                injectLibraries(sandboxEngine);
-                patchEngine(sandboxEngine);
-            }
-        }
-
-        return sandboxEngine;
+        return createEngine();
     }
 
     public SandboxScriptEngine createEngine(){
@@ -123,29 +113,48 @@ public class JSEngineService {
     }
 
     private SandboxScriptEngine injectLibraries(SandboxScriptEngine sandboxEngine){
+        if(runtimeVersion == RuntimeVersion.VERSION_1){
+            return injectLibrariesV1(sandboxEngine);
+        }else if(runtimeVersion == RuntimeVersion.VERSION_2){
+            return injectLibrariesV2(sandboxEngine);
+        }else{
+            throw new RuntimeException("Unsupported runtime version");
+        }
+    }
+
+    private SandboxScriptEngine injectLibrariesV1(SandboxScriptEngine sandboxEngine){
         final Bindings globalScope = sandboxEngine.getContext().getBindings(ScriptContext.GLOBAL_SCOPE);
         final Bindings engineScope = sandboxEngine.getContext().getBindings(ScriptContext.ENGINE_SCOPE);
 
-        //if we have a lodash (weve already injected 3rd party before), then inject back into new engine scope. bit of a hack.
-        if(sandboxEngine.getLodash() != null){
-            engineScope.put("_", sandboxEngine.getLodash());
-            return sandboxEngine;
+        try {
+            String runtimeVersionPath = runtimeVersion.name().toLowerCase();
+            loadAndSealScript("lodash.js","lib/" + runtimeVersionPath + "/lodash-2.4.1.min", "_", engineScope, sandboxEngine.getEngine());
+            loadAndSealScript("faker.js","lib/" + runtimeVersionPath + "/faker-2.1.2.min", "faker", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("moment.js", "lib/" + runtimeVersionPath + "/moment-2.8.2.min", "moment", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("amanda.js", "lib/" + runtimeVersionPath + "/amanda-0.4.8.min", "amanda", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("validator.js", "lib/" + runtimeVersionPath + "/validator.min", "validator", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("sandbox-validator.js", "lib/" + runtimeVersionPath + "/sandbox-validator", "sandboxValidator", globalScope, sandboxEngine.getEngine());
+
+        } catch (ScriptException e) {
+            logger.error("Error loading 3rd party JS", e);
         }
 
+        return sandboxEngine;
+    }
+
+    private SandboxScriptEngine injectLibrariesV2(SandboxScriptEngine sandboxEngine){
+        final Bindings globalScope = sandboxEngine.getContext().getBindings(ScriptContext.GLOBAL_SCOPE);
+        final Bindings engineScope = sandboxEngine.getContext().getBindings(ScriptContext.ENGINE_SCOPE);
+
         try {
-            loadAndSealScript("lodash-2.4.1.js","lib/lodash-2.4.1.min", "_", engineScope, sandboxEngine.getEngine());
-            //get the current lodash instance, and store in engine context to inject it again later. Lo-dash needs to be in the engine scope rather than global for some reason =/
-            sandboxEngine.getContext().setAttribute("sandboxEngine", sandboxEngine, ScriptContext.ENGINE_SCOPE);
-            sandboxEngine.getEngine().eval("sandboxEngine.passLodash(_)", sandboxEngine.getContext());
-            sandboxEngine.getContext().removeAttribute("sandboxEngine", ScriptContext.ENGINE_SCOPE);
-
-            loadAndSealScript("faker.js","lib/faker-2.1.5.min", "faker", globalScope, sandboxEngine.getEngine());
-            loadAndSealScript("moment.js", "lib/moment-2.8.2.min", "moment", globalScope, sandboxEngine.getEngine());
-            loadAndSealScript("amanda.js", "lib/amanda-0.4.8.min", "amanda", globalScope, sandboxEngine.getEngine());
-            loadAndSealScript("chance.js", "lib/chance-0.8.0.min", "chance", globalScope, sandboxEngine.getEngine());
-            loadAndSealScript("validator.js", "lib/validator.min", "validator", globalScope, sandboxEngine.getEngine());
-            loadAndSealScript("sandbox-validator.js", "sandbox-validator", "sandboxValidator", globalScope, sandboxEngine.getEngine());
-
+            String runtimeVersionPath = runtimeVersion.name().toLowerCase();
+            loadAndSealScript("lodash.js","lib/" + runtimeVersionPath + "/lodash-4.2.1.min", "_", engineScope, sandboxEngine.getEngine());
+            loadAndSealScript("faker.js","lib/" + runtimeVersionPath + "/faker-3.0.1.min", "faker", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("moment.js", "lib/" + runtimeVersionPath + "/moment-2.11.2.min", "moment", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("amanda.js", "lib/" + runtimeVersionPath + "/amanda-0.4.8.min", "amanda", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("chance.js", "lib/" + runtimeVersionPath + "/chance-0.8.0.min", "chance", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("validator.js", "lib/" + runtimeVersionPath + "/validator-4.7.2.min", "validator", globalScope, sandboxEngine.getEngine());
+            loadAndSealScript("sandbox-validator.js", "lib/" + runtimeVersionPath + "/sandbox-validator", "sandboxValidator", globalScope, sandboxEngine.getEngine());
         } catch (ScriptException e) {
             logger.error("Error loading 3rd party JS", e);
         }

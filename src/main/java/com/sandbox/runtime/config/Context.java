@@ -7,11 +7,13 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.sandbox.runtime.converters.HttpServletConverter;
 import com.sandbox.runtime.js.models.Console;
+import com.sandbox.runtime.js.models.RuntimeVersion;
 import com.sandbox.runtime.js.serializers.ScriptObjectMirrorSerializer;
 import com.sandbox.runtime.js.serializers.ScriptObjectSerializer;
 import com.sandbox.runtime.js.serializers.UndefinedSerializer;
 import com.sandbox.runtime.js.services.JSEngineService;
 import com.sandbox.runtime.js.services.RuntimeService;
+import com.sandbox.runtime.js.services.ServiceManager;
 import com.sandbox.runtime.js.utils.NashornUtils;
 import com.sandbox.runtime.js.utils.NashornRuntimeUtils;
 import com.sandbox.runtime.js.utils.NashornValidationUtils;
@@ -69,7 +71,8 @@ public class Context {
             command.process();
 
         }catch(Throwable e){
-            logger.error("Error starting runtime - " + unwrapException(e).getMessage());
+            logger.error("Error starting runtime");
+            unwrapException(e).printStackTrace();
             System.exit(1);
         }
     }
@@ -129,11 +132,19 @@ public class Context {
     @Bean(name = "droneService")
     @Scope("prototype")
     @Lazy
-    public RuntimeService runtimeService() {
-        //defaulted because its always the same
-        SandboxScriptEngine engine = applicationContext.getBean(JSEngineService.class).getEngineForSandboxId("1");
-        return new RuntimeService(engine);
+    public RuntimeService runtimeService(SandboxScriptEngine engine, String fullSandboxId, String sandboxId) {
+        NashornUtils nashornUtils = (NashornUtils) applicationContext.getBean("nashornUtils", sandboxId);
+        return new RuntimeService(engine, nashornUtils, fullSandboxId, sandboxId);
     }
+
+    @Bean
+    public JSEngineService jsEngineService(){
+        //TODO Choose runtime version
+        return new JSEngineService(RuntimeVersion.getLatest());
+    }
+
+    @Bean
+    public ServiceManager serviceManager(){ return new ServiceManager(50); }
 
     @Bean
     public CommandLineProcessor getCommandLineProcessor() { return new CommandLineProcessor(); }

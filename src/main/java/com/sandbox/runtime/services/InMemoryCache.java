@@ -1,5 +1,6 @@
 package com.sandbox.runtime.services;
 
+import com.sandbox.runtime.js.services.ServiceManager;
 import com.sandbox.runtime.models.Cache;
 import com.sandbox.runtime.models.RoutingTable;
 import com.sun.nio.file.SensitivityWatchEventModifier;
@@ -21,6 +22,7 @@ import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.HashMap;
+import java.util.Map;
 
 import static java.nio.file.StandardWatchEventKinds.*;
 
@@ -34,6 +36,9 @@ public class InMemoryCache implements Cache {
 
     @Autowired
     CommandLineProcessor commandLine;
+
+    @Autowired
+    ServiceManager serviceManager;
 
     RoutingTable routingTable;
 
@@ -92,6 +97,12 @@ public class InMemoryCache implements Cache {
         return routingTable;
     }
 
+    @Override
+    public Map<String, String> getConfigForSandboxId(String sandboxId) {
+        //TODO: Allow config to be set somehow, prolly JVM args?
+        return new HashMap<>();
+    }
+
     private void listenForFileChange(Path base){
 
         try {
@@ -117,6 +128,7 @@ public class InMemoryCache implements Cache {
                             if(event.context().toString().endsWith(".js")){
                                 setRoutingTableForSandboxId("1",null);
                                 fileContents.clear();
+                                serviceManager.refreshService("1", "1");
                                 logger.info("Clearing routing table on JS file change");
                             }
                         }
