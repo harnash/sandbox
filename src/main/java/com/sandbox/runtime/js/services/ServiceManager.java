@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 
+import javax.annotation.PostConstruct;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,6 +33,7 @@ public class ServiceManager {
     private int refreshThreshold = 1;
     private Map<String, AtomicInteger> counters = new HashMap<>();
     private Map<String, Service> services = new ConcurrentHashMap<>();
+    private Map<String, String> fullSandboxReference = new ConcurrentHashMap<>();
     private Map<String, Map<String, String>> configs = new ConcurrentHashMap<>();
     private Map<RuntimeVersion, JSEngineService> engineServices = new ConcurrentHashMap<>();
     private ExecutorService executorService = Executors.newCachedThreadPool();
@@ -43,6 +45,11 @@ public class ServiceManager {
 
     public ServiceManager(int refreshThreshold) {
         this.refreshThreshold = refreshThreshold;
+    }
+
+    @PostConstruct
+    public void init(){
+        engineServices.put(RuntimeVersion.getLatest(), context.getBean(JSEngineService.class, RuntimeVersion.getLatest()));
     }
 
     public Service getValidationService(String fullSandboxId, String sandboxId){
@@ -57,7 +64,7 @@ public class ServiceManager {
         counters.putIfAbsent(sandboxId, counter);
         counter.incrementAndGet();
         //if we have to refresh
-        if(counter.get() % refreshThreshold == 0) {
+        if(refreshThreshold > 0 && counter.get() % refreshThreshold == 0) {
             executorService.execute(() -> {
                 createService(fullSandboxId, sandboxId);
             });
@@ -74,21 +81,35 @@ public class ServiceManager {
         SandboxScriptEngine engine = getEngineServiceForSandbox(sandboxId).createOrGetEngine();
         Service service = (Service)context.getBean("droneService", engine, fullSandboxId, sandboxId);
         addConfigToService(service);
+        fullSandboxReference.put(sandboxId, fullSandboxId);
         services.put(sandboxId, service);
         return service;
     }
 
-    public void refreshService(String fullSandboxId, String sandboxId){
+    public void refreshService(String sandboxId){
+        String fullSandboxId = fullSandboxReference.get(sandboxId);
+        if(fullSandboxId == null){
+            logger.warn("Call refreshService() before calling create()/get() for sandboxId: {}", sandboxId);
+            return;
+        }
+
         //asked for a refresh, so get new config, otherwise it uses local cache.
         configs.remove(sandboxId);
         //generate a new one with new changes
         createService(fullSandboxId, sandboxId);
+        //find and refresh any sandboxes that are clones. if ids are equal, it is a change to a forked sb
+        if(fullSandboxId.equals(sandboxId)){
+            fullSandboxReference.entrySet().stream()
+                    .filter( e -> { return e.getValue().equals(fullSandboxId); })
+                    .forEach(e -> { createService(fullSandboxId, e.getKey()); });
+        }
     }
 
     public void removeService(String sandboxId){
         services.remove(sandboxId);
         configs.remove(sandboxId);
         counters.remove(sandboxId);
+        fullSandboxReference.remove(sandboxId);
     }
 
     private JSEngineService getEngineServiceForSandbox(String sandboxId){

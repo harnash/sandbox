@@ -14,8 +14,8 @@ import com.sandbox.runtime.js.serializers.UndefinedSerializer;
 import com.sandbox.runtime.js.services.JSEngineService;
 import com.sandbox.runtime.js.services.RuntimeService;
 import com.sandbox.runtime.js.services.ServiceManager;
-import com.sandbox.runtime.js.utils.NashornUtils;
 import com.sandbox.runtime.js.utils.NashornRuntimeUtils;
+import com.sandbox.runtime.js.utils.NashornUtils;
 import com.sandbox.runtime.js.utils.NashornValidationUtils;
 import com.sandbox.runtime.models.Cache;
 import com.sandbox.runtime.models.SandboxScriptEngine;
@@ -139,12 +139,25 @@ public class Context {
 
     @Bean
     public JSEngineService jsEngineService(){
-        //TODO Choose runtime version
-        return new JSEngineService(RuntimeVersion.getLatest());
+        CommandLineProcessor commandLineProcessor = applicationContext.getBean(CommandLineProcessor.class);
+        return new JSEngineService(commandLineProcessor.getRuntimeVersion());
     }
 
     @Bean
-    public ServiceManager serviceManager(){ return new ServiceManager(50); }
+    @Scope("prototype")
+    public JSEngineService jsEngineService(RuntimeVersion runtimeVersion){
+        return new JSEngineService(runtimeVersion);
+    }
+
+    @Bean
+    public ServiceManager serviceManager(){
+        CommandLineProcessor command = applicationContext.getBean(CommandLineProcessor.class);
+        if(command.refreshDisabled()){
+            return new ServiceManager(-1);
+        }else{
+            return new ServiceManager(250);
+        }
+    }
 
     @Bean
     public CommandLineProcessor getCommandLineProcessor() { return new CommandLineProcessor(); }

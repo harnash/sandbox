@@ -6,11 +6,13 @@ Sandbox Runtime is the core processing component of the Sandbox product, it is r
 
 This project consists of both the core runtime code, and a lightweight wrapper to simplify command line use. The compiled version is around 10mb and can be run on mac and linux. 
 
+**Note**: Gradle 2.12+ is required to build this yourself, if not using the pre-built binary.
+
 ## Installation
 
 The code can be cloned and compiled by itself (Gradle is used for dependency management) or you can just download the compiled and packaged binary which can be run from the command line on a supported OS.
 
-[Latest compiled binary](https://s3-us-west-2.amazonaws.com/getsandbox-assets/runtime-binary.tar)
+[Latest compiled binary](https://s3.amazonaws.com/sandbox-binaries/runtime-binary.tar)
 
 [ ![Codeship Status for getsandbox/sandbox](https://www.codeship.io/projects/74b27060-413f-0132-8b16-3ae7a01b01d4/status)](https://www.codeship.io/projects/44131)
 
@@ -33,6 +35,8 @@ run      Starts a sandbox runtime in the current working directory.
 Options:
 --port=<port number>
 --base=<base directory> (Overrides working directory)
+--state=<file to persist state to> (Reads/writes a file to persist state across runs)
+--runtimeVersion=VERSION_1|VERSION_2
 --verbose (Increases logging verbosity, full request and response bodies etc)
 ```
 

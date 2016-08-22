@@ -11,6 +11,7 @@ import com.sandbox.runtime.models.Cache;
 import com.sandbox.common.models.Error;
 import com.sandbox.runtime.models.RoutingTable;
 import com.sandbox.common.models.RuntimeResponse;
+import com.sandbox.runtime.models.XMLDoc;
 import com.sandbox.runtime.models.http.HTTPRequest;
 import com.sandbox.runtime.models.http.HTTPRouteDetails;
 import com.sandbox.common.models.http.HttpRuntimeRequest;
@@ -33,6 +34,7 @@ import org.springframework.util.StringUtils;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.xml.xpath.XPathConstants;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -78,7 +80,7 @@ public class HttpRequestHandler extends AbstractHandler {
 
     //handle is synchronized so that the JS processing is done on one thread.
     @Override
-    public synchronized void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
+    public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
         baseRequest.setHandled(true);
 
         //defaulted
@@ -86,19 +88,19 @@ public class HttpRequestHandler extends AbstractHandler {
         String sandboxName = "name";
         try {
             long startedRequest = System.currentTimeMillis();
-            String requestId = UUID.randomUUID().toString();
+            String requestId = commandLine.isDisableIDs() ? "1" : UUID.randomUUID().toString();
 
             //convert incoming request to InstanceHttpRequest
             HttpRuntimeRequest runtimeRequest = servletConverter.httpServletToInstanceHttpRequest(request);
 
             //get a runtime service instance
-            RuntimeService runtimeService = (RuntimeService) serviceManager.getService(sandboxId, sandboxId);
+            RuntimeService runtimeService = (RuntimeService) serviceManager.getService(sandboxId, Thread.currentThread().getName());
 
             //create and lookup routing table
-            RoutingTable routingTable = cache.getRoutingTableForSandboxId(sandboxId);
+            RoutingTable routingTable = cache.getRoutingTableForSandboxId(sandboxId, sandboxId);
             if(routingTable == null) {
                 routingTable = runtimeService.handleRoutingTableRequest();
-                cache.setRoutingTableForSandboxId(sandboxId, routingTable);
+                cache.setRoutingTableForSandboxId(sandboxId, sandboxId, routingTable);
             }
             HTTPRouteDetails routeMatch = findMatchedRoute(runtimeRequest, routingTable);
             //if no route match for given request, then log message and send error response.
@@ -111,7 +113,7 @@ public class HttpRequestHandler extends AbstractHandler {
             }
 
             //log request with route
-            logRequest(runtimeRequest, routeMatch, requestId);
+            if(!commandLine.isDisableLogging()) logRequest(runtimeRequest, routeMatch, requestId);
 
             //run request
             HTTPRequest httpRequest = serviceConverter.fromInstanceHttpRequest(runtimeService.getSandboxScriptEngine().getEngine(), runtimeRequest);
@@ -126,13 +128,21 @@ public class HttpRequestHandler extends AbstractHandler {
                 runtimeResponse.getHeaders().put("Access-Control-Allow-Credentials", "true");
             }else{
                 //otherwise process normally
-                runtimeResponse = (HttpRuntimeResponse) runtimeService.handleRequest(httpRequest).get(0);
+                if(commandLine.concurrencyEnabled()){
+                    runtimeResponse = (HttpRuntimeResponse) runtimeService.handleRequest(httpRequest).get(0);
+                }else{
+                    //if concurrency disabled then synchronise JS execution
+                    synchronized (this) {
+                        runtimeResponse = (HttpRuntimeResponse) runtimeService.handleRequest(httpRequest).get(0);
+                    }
+                }
             }
             runtimeResponse.setDurationMillis(System.currentTimeMillis() - startedRequest);
 
-            logConsole(runtimeService);
-
-            logResponse(runtimeResponse, requestId);
+            if(!commandLine.isDisableLogging()){
+                logConsole(runtimeService);
+                logResponse(runtimeResponse, requestId);
+            }
 
             //set response data back onto servlet response
             mapResponse(runtimeResponse, response);
@@ -211,6 +221,22 @@ public class HttpRequestHandler extends AbstractHandler {
 
     //gets the matching route (if any) out of the routing table
     private HTTPRouteDetails findMatchedRoute(HttpRuntimeRequest request, RoutingTable table) throws Exception {
+        //if we have a SOAP Action header, assume this is SOAP, amaze? And go get the operation name
+        if("xml".equals(request.getContentType())){
+            try {
+                if(request.getHeaders().get("SOAPAction") != null) request.getProperties().put("SOAPAction", request.getHeaders().get("SOAPAction"));
+
+                String soapBodyXPath = "local-name(//*[local-name()='Envelope']/*[local-name()='Body']/*[1])";
+                String operationName = new XMLDoc(request.getBody()).get(soapBodyXPath, XPathConstants.STRING, String.class);
+                // add to both maps,
+                request.getProperties().put("SOAPOperationName", operationName);
+                logger.debug("Found SOAP Operation Name: {}", operationName);
+
+            } catch (Exception e) {
+                logger.error("Error retrieving SOAP Operation Name", e);
+            }
+        }
+
         HTTPRouteDetails match = (HTTPRouteDetails) table.findMatch(request);
         if(match == null) return null;
 
